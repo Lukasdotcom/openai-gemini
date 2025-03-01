@@ -1,0 +1,43 @@
+name: Docker Build/Publish Beta
+
+on:
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_REGISTRY: docker.io
+      DOCKER_IMAGE: lukasdotcom/openai-gemini
+      DOCKER_TARGET_PLATFORM: linux/arm64,linux/amd64
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v4
+      # https://github.com/docker/setup-qemu-action
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      # https://github.com/docker/setup-buildx-action
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Prepare
+        if: success()
+        id: prepare
+        run: |
+          echo "docker_platform=${DOCKER_TARGET_PLATFORM}" >> $GITHUB_OUTPUT
+          echo "docker_image=${DOCKER_REGISTRY}/${DOCKER_IMAGE}" >> $GITHUB_OUTPUT
+          echo "version=${GITHUB_RUN_NUMBER}" >> $GITHUB_OUTPUT
+      - name: Login to Docker Hub
+        if: success()
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PAT }}
+      - name: Run Buildx (push image)
+        if: success()
+        run: |
+          docker buildx build --platform ${{ steps.prepare.outputs.docker_platform }} --tag ${{ steps.prepare.outputs.docker_image }}:latest --file ./Dockerfile --push .
