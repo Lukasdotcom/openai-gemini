@@ -9,4 +9,4 @@ COPY app.py app.py
 
 EXPOSE 8000
 
-CMD ["gunicorn", "-w 4", "app:app"]
+CMD ["gunicorn", "-w", "4", "--bind", "0.0.0.0:80", "app:app"]
