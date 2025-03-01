@@ -2,7 +2,7 @@ name: Docker Build/Publish Beta
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
