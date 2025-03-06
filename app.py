@@ -184,7 +184,7 @@ def chat_completions():
                 "index": idx,
                 "message": {
                     "role": "assistant",
-                    "function_call": function_call
+                    "tool_calls": function_call
                 },
                 "finish_reason": candidate.finish_reason
             })
