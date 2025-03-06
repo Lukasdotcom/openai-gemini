@@ -2,9 +2,11 @@ import base64
 
 from flask import Flask, jsonify, request
 from google import genai
-from google.genai.types import Content, Part, GenerateContentConfigOrDict
+from google.genai.types import Content, Part, FunctionDeclaration, Schema, Type
 import time
-from werkzeug.wrappers import Request, Response, ResponseStream
+import random
+import json
+from werkzeug.wrappers import Response
 
 app = Flask(__name__)
 
@@ -45,10 +47,54 @@ def get_chat_config(request):
             'n')}
 
 
+def convert_tools(tools):
+    if tools is None:
+        return []
+    result: list[FunctionDeclaration] = []
+    openai_to_gemini_types = {
+        "string": Type.STRING,
+        "integer": Type.INTEGER,
+        "array": Type.ARRAY,
+        "number": Type.NUMBER,
+    }
+    for tool in tools:
+        properties = {}
+        required = tool["function"]["parameters"].get('required', [])
+        for key, value in tool["function"]["parameters"]["properties"].items():
+            if value.get("type") is not None:
+                properties[key] = Schema(type=openai_to_gemini_types[value["type"]])
+                if value["type"] == 'array':
+                    properties[key].items = Schema(type=openai_to_gemini_types[value["items"]["type"]])
+            elif value.get('anyOf') is not None:
+                any_of = []
+                for item in value['anyOf']:
+                    if item['type'] == 'null':
+                        required.remove(key)
+                        continue
+                    any_of.append(Schema(type=openai_to_gemini_types[item["type"]]))
+                    if item["type"] == 'array':
+                        any_of[-1].items = Schema(type=openai_to_gemini_types[item["items"]["type"]])
+                # Not that currently any_of is not supported by google ai so just using the first type
+                properties[key] = any_of[0]
+        new_tool = FunctionDeclaration(name=tool["function"]["name"])
+        # Check if there are any properties given
+        if len(properties) != 0:
+            new_tool.parameters = Schema(description=tool["function"]["description"],
+                                         type=Type.OBJECT,
+                                         required=required,
+                                         properties=properties)
+        result.append(new_tool)
+    app.logger.debug('Tools: %s', result)
+    return [{"function_declarations": result}]
+
+
 @app.route('/models', methods=['GET'])
 def models():
     client = get_client(request)
-    list_of_models = {"data": [{"id": model.name, "object": "model"} for model in client.models.list()]}
+    models = [{"id": model.name, "object": "model"} for model in client.models.list()]
+    if len(models) == 0:
+        return Response("No models found", status=400)
+    list_of_models = {"data": models}
     return jsonify(list_of_models)
 
 
@@ -90,38 +136,69 @@ def chat_completions():
     messages = request.json.get('messages')
     system = None
     history: list[Content] = []
-    user_message = None
     for message in messages:
-        if user_message is not None:
-            history.append(Content(parts=[Part(text=user_message)], role="user"))
-            user_message = None
-        if message['role'] == 'system':
+        if message.get('role') == 'system':
             system = message['content']
-        elif message['role'] == 'user':
-            user_message = message['content']
+        elif message.get('type') == 'function':
+            function_call = {"id": message['id'], "name": message["function"]["name"]}
+            if message["function"].get("arguments") is not None:
+                function_call["args"] = json.loads(message["function"].get("arguments"))
+            history.append(
+                Content(
+                    parts=[Part(function_call=function_call)]))
+        elif message.get('role') == 'tool':
+            name = message['tool_call_id'].split("_")[1:]
+            name = "_".join(name)
+            history.append(
+                Content(parts=[
+                    Part(function_response={"name": name, "id": message['tool_call_id'],
+                                            "response": {"result": message['content']}})]))
         else:
-            history.append(Content(role=message['role'], parts=[Part(text=message['content'])]))
-    if user_message is None:
-        user_message = ""
+            history.append(Content(role=message['role'], parts=[
+                Part(text=message['content'])]))
     config = get_chat_config(request)
     config["system_instruction"] = system
+    config["tools"] = convert_tools(request.json.get('tools'))
+    if len(history) == 0:
+        return Response("No messages given", status=400)
+    newest_message = history.pop()
     chat = client.chats.create(model=request.json.get('model'), history=history, config=config)
-    response_genai = chat.send_message(Part(text=user_message))
+    response_genai = chat.send_message(newest_message.parts[0])
     app.logger.debug('response_genai: %s', format(response_genai))
     choices = []
     for idx, candidate in enumerate(response_genai.candidates):
         text = ""
+        function_calls = []
         for part in candidate.content.parts:
-            text += part.text
-        choices.append({
-            "index": idx,
-            "message": {
-                "role": "assistant",
-                "content": text,
-                "refusal": None,
-            },
-            "finish_reason": candidate.finish_reason
-        })
+            if part.text is not None:
+                text += part.text
+            elif part.function_call is not None:
+                function_calls.append({"id": str(random.randint(0, 1000000)) + "_" + part.function_call.name,
+                                       "type": "function",
+                                       "function": {
+                                           "name": part.function_call.name,
+                                           "arguments": json.dumps(part.function_call.args)
+                                       }})
+        for function_call in function_calls:
+            choices.append({
+                "index": idx,
+                "message": {
+                    "role": "assistant",
+                    "content": text,
+                    "function_call": function_call
+                },
+                "finish_reason": candidate.finish_reason
+            })
+        if len(text) > 0:
+            choices.append({
+                "index": idx,
+                "message": {
+                    "role": "assistant",
+                    "content": text,
+                    "refusal": None,
+                },
+                "finish_reason": candidate.finish_reason
+            })
     response = {
         "id": f"chatcmpl-{int(time.time())}",
         "object": "chat.completion",
@@ -134,6 +211,7 @@ def chat_completions():
             "total_tokens": response_genai.usage_metadata.prompt_token_count
         }
     }
+    print(response)
     return jsonify(response)
 
 
