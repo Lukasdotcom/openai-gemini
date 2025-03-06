@@ -186,7 +186,7 @@ def chat_completions():
                     "role": "assistant",
                     "tool_calls": function_call
                 },
-                "finish_reason": candidate.finish_reason
+                "finish_reason": "tool_calls"
             })
         if len(text) > 0:
             choices.append({
