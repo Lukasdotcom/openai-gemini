@@ -1,4 +1,5 @@
 import base64
+from collections import defaultdict
 
 from flask import Flask, jsonify, request
 from google import genai
@@ -58,6 +59,8 @@ def convert_tools(tools):
         "array": Type.ARRAY,
         "number": Type.NUMBER,
     }
+    add_back_when_not_defined = defaultdict(
+        lambda: [])  # A list of parameters that need to be set to null when they don't exist
     for tool in tools:
         properties = {}
         required = tool["function"]["parameters"].get('required', [])
@@ -71,6 +74,7 @@ def convert_tools(tools):
                 for item in value['anyOf']:
                     if item['type'] == 'null':
                         required.remove(key)
+                        add_back_when_not_defined[tool["function"]["name"]].append(key)
                         continue
                     any_of.append(Schema(type=openai_to_gemini_types[item["type"]]))
                     if item["type"] == 'array':
@@ -86,7 +90,7 @@ def convert_tools(tools):
                                          properties=properties)
         result.append(new_tool)
     app.logger.debug('Tools: %s', result)
-    return [{"function_declarations": result}]
+    return [{"function_declarations": result}], add_back_when_not_defined
 
 
 @app.route('/models', methods=['GET'])
@@ -161,7 +165,7 @@ def chat_completions():
                 Part(text=message['content'])]))
     config = get_chat_config(request)
     config["system_instruction"] = system
-    config["tools"] = convert_tools(request.json.get('tools'))
+    config["tools"], add_back_when_not_defined = convert_tools(request.json.get('tools'))
     if len(history) == 0:
         return Response("No messages given", status=400)
     newest_message = history.pop()
@@ -176,11 +180,15 @@ def chat_completions():
             if part.text is not None:
                 text += part.text
             elif part.function_call is not None:
+                args = part.function_call.args
+                for key in add_back_when_not_defined[part.function_call.name]:
+                    if key not in args:
+                        args[key] = None
                 function_calls.append({"id": str(random.randint(0, 1000000)) + "_" + part.function_call.name,
                                        "type": "function",
                                        "function": {
                                            "name": part.function_call.name,
-                                           "arguments": json.dumps(part.function_call.args)
+                                           "arguments": json.dumps(args)
                                        }})
         if len(function_calls) > 0:
             choices.append({
