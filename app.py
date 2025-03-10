@@ -2,7 +2,7 @@ import base64
 
 from flask import Flask, jsonify, request
 from google import genai
-from google.genai.types import Content, Part, FunctionDeclaration, Schema, Type
+from google.genai.types import Content, Part, FunctionDeclaration, Schema, Type, FunctionResponse, FunctionCall
 import time
 import random
 import json
@@ -14,6 +14,7 @@ app = Flask(__name__)
 @app.before_request
 def log_request():
     try:
+        app.logger.debug('Request path: %s', request.path)
         app.logger.debug('Request: %s', request.get_json())
     except:
         pass
@@ -139,20 +140,22 @@ def chat_completions():
     for message in messages:
         if message.get('role') == 'system':
             system = message['content']
-        elif message.get('type') == 'function':
-            function_call = {"id": message['id'], "name": message["function"]["name"]}
-            if message["function"].get("arguments") is not None:
-                function_call["args"] = json.loads(message["function"].get("arguments"))
-            history.append(
-                Content(
-                    parts=[Part(function_call=function_call)]))
         elif message.get('role') == 'tool':
-            name = message['tool_call_id'].split("_")[1:]
-            name = "_".join(name)
+            history.append(Content(role='tool', parts=[Part(
+                function_response=FunctionResponse(id=message['tool_call_id'], name=message["name"],
+                                                   response={
+                                                       "output": message["content"]
+                                                   }))]))
+        elif message.get('tool_calls') is not None:
+            responses = []
+            for tool_call in message['tool_calls']:
+                function_call = FunctionCall(name=tool_call["function"]['name'], id=tool_call['id'])
+                if len(json.loads(tool_call["function"]["arguments"])) > 0:
+                    function_call.args = json.loads(tool_call["function"]["arguments"])
+                responses.append(
+                    Part(function_call=function_call))
             history.append(
-                Content(parts=[
-                    Part(function_response={"name": name, "id": message['tool_call_id'],
-                                            "response": {"result": message['content']}})]))
+                Content(parts=responses))
         else:
             history.append(Content(role=message['role'], parts=[
                 Part(text=message['content'])]))
@@ -179,12 +182,12 @@ def chat_completions():
                                            "name": part.function_call.name,
                                            "arguments": json.dumps(part.function_call.args)
                                        }})
-        for function_call in function_calls:
+        if len(function_calls) > 0:
             choices.append({
                 "index": idx,
                 "message": {
                     "role": "assistant",
-                    "tool_calls": function_call
+                    "tool_calls": function_calls
                 },
                 "finish_reason": "tool_calls"
             })
@@ -210,7 +213,6 @@ def chat_completions():
             "total_tokens": response_genai.usage_metadata.prompt_token_count
         }
     }
-    print(response)
     return jsonify(response)
 
 
