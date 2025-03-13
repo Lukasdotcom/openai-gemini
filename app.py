@@ -51,7 +51,7 @@ def get_chat_config(request):
 
 def convert_tools(tools):
     if tools is None:
-        return []
+        return [], []
     result: list[FunctionDeclaration] = []
     openai_to_gemini_types = {
         "string": Type.STRING,
