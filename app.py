@@ -43,10 +43,8 @@ def get_client(request):
 
 
 def get_chat_config(request):
-    return {"max_output_tokens": request.json.get(
-        'max_tokens'),
-        "candidate_count": request.json.get(
-            'n')}
+    return {"candidate_count": request.json.get(
+        'n')}
 
 
 def convert_tools(tools):
