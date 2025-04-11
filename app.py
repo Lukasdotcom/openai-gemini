@@ -143,7 +143,7 @@ def chat_completions():
         if message.get('role') == 'system':
             system = message['content']
         elif message.get('role') == 'tool':
-            history.append(Content(role='tool', parts=[Part(
+            history.append(Content(role='user', parts=[Part(
                 function_response=FunctionResponse(id=message['tool_call_id'], name=message["name"],
                                                    response={
                                                        "output": message["content"]
@@ -157,10 +157,15 @@ def chat_completions():
                 responses.append(
                     Part(function_call=function_call))
             history.append(
-                Content(parts=responses))
+                Content(parts=responses, role="model"))
         else:
-            history.append(Content(role=message['role'], parts=[
+            role = message.get('role')
+            if role == 'assistant':
+                role = 'model'
+
+            history.append(Content(role=role, parts=[
                 Part(text=message['content'])]))
+
     config = get_chat_config(request)
     config["system_instruction"] = system
     config["tools"], add_back_when_not_defined = convert_tools(request.json.get('tools'))
